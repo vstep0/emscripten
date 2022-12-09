@@ -31,6 +31,7 @@ var LibraryPThread = {
   $PThread__deps: ['_emscripten_thread_init',
                    '$killThread',
                    '$cancelThread', '$cleanupThread', '$zeroMemory',
+                   '$markAsZombie',
                    '$spawnThread',
                    '_emscripten_thread_free_data',
                    'exit',
@@ -55,6 +56,7 @@ var LibraryPThread = {
     // the reverse mapping, each worker has a `pthread_ptr` when its running a
     // pthread.
     pthreads: {},
+    zombieThreads: {},
 #if PTHREADS_DEBUG
     nextWorkerID: 1,
     debugInit: function() {
@@ -267,6 +269,8 @@ var LibraryPThread = {
           spawnThread(d);
         } else if (cmd === 'cleanupThread') {
           cleanupThread(d['thread']);
+        } else if (cmd === 'markAsZombie') {
+          markAsZombie(d['thread']);
         } else if (cmd === 'killThread') {
           killThread(d['thread']);
         } else if (cmd === 'cancelThread') {
@@ -527,6 +531,18 @@ var LibraryPThread = {
     worker.pthread_ptr = 0;
   },
 
+  __emscripten_thread_exit_joinable: function(thread) {
+    // Called when a thread exits and is joinable.  This puts the thread
+    // into zombie state where it can't run anymore work but cannot yet
+    // be cleaned up.
+    if (!ENVIRONMENT_IS_PTHREAD) markAsZombie(thread);
+    else postMessage({ 'cmd': 'markAsZombie', 'thread': thread });
+  },
+
+  $markAsZombie: function(pthread_ptr) {
+    PThread.zombieThreads[pthread_ptr] = true;
+  },
+
   __emscripten_thread_cleanup: function(thread) {
     // Called when a thread needs to be cleaned up so it can be reused.
     // A thread is considered reusable when it either returns from its
@@ -543,6 +559,7 @@ var LibraryPThread = {
     assert(pthread_ptr, 'Internal Error! Null pthread_ptr in cleanupThread!');
 #endif
     var worker = PThread.pthreads[pthread_ptr];
+    delete PThread.zombieThreads[pthread_ptr];
     assert(worker);
     PThread.returnWorkerToPool(worker);
   },
@@ -1067,6 +1084,68 @@ var LibraryPThread = {
       __emscripten_thread_exit(result);
     }
 #endif
+  },
+
+#if MAIN_MODULE
+  // Asynchronous version sync_all_threads. Always run on the main thread.
+  // This work happens asynchronously. The `callback` is called once this work
+  // is completed, passing the ctx.
+  // TODO(sbc): Should we make a new form of __proxy attribute for JS library
+  // function that run asynchronously like but blocks the caller until they are
+  // done.  Perhaps "sync_with_ctx"?
+  _emscripten_sync_all_threads_async__sig: 'viii',
+  _emscripten_sync_all_threads_async__deps: ['_emscripten_proxy_sync_code_async', '$newNativePromise'],
+  _emscripten_sync_all_threads_async: function(caller, callback, ctx) {
+#if PTHREADS_DEBUG
+    dbg("_emscripten_sync_all_threads_async caller=" + ptrToString(caller));
+#endif
+#if ASSERTIONS
+    assert(!ENVIRONMENT_IS_PTHREAD, 'Internal Error! _emscripten_sync_all_threads_async() can only ever be called from main thread');
+#endif
+
+    const promises = [];
+
+    // This first promise resolves once the main thread has loaded all modules.
+    promises.push(newNativePromise(__emscripten_thread_sync_code_async, null).promise);
+
+    // We then create a sequence of promises, one per thread, that resolve once
+    // each thread has performed its sync using _emscripten_proxy_sync_code.
+    // Any new threads that are created after this call will automaticaly be
+    // in sync because we call `__emscripten_thread_sync_code` in
+    // invokeEntryPoint before the threads entry point is called.
+    for (const ptr of Object.keys(PThread.pthreads)) {
+      const pthread_ptr = Number(ptr);
+      if (pthread_ptr !== caller && !(pthread_ptr in PThread.zombieThreads)) {
+        promises.push(newNativePromise(__emscripten_proxy_sync_code_async, pthread_ptr).promise);
+      }
+    }
+
+#if PTHREADS_DEBUG
+    dbg('_emscripten_sync_all_threads_async: waiting on ' + promises.length + ' promises');
+#endif
+    // Once all promises are resolved then we know all threads are in sync and
+    // we can call the callback.
+    Promise.all(promises).then(() => {
+#if PTHREADS_DEBUG
+      dbg('_emscripten_sync_all_threads_async done: calling callback');
+#endif
+      {{{ makeDynCall('vp', 'callback') }}}(ctx);
+    });
+  },
+#endif // MAIN_MODULE
+
+  // Synchronous version sync_all_threads. Always run on the main thread.
+  _emscripten_sync_all_threads__deps: ['_emscripten_proxy_sync_code'],
+  _emscripten_sync_all_threads: function() {
+#if ASSERTIONS
+    assert(!ENVIRONMENT_IS_PTHREAD, 'Internal Error! _emscripten_sync_all_threads() can only ever be called from main thread');
+#endif
+    for (const ptr of Object.keys(PThread.pthreads)) {
+      const pthread_ptr = Number(ptr);
+      if (!(pthread_ptr in PThread.zombieThreads)) {
+        __emscripten_proxy_sync_code(pthread_ptr);
+      }
+    }
   },
 
   $executeNotifiedProxyingQueue: function(queue) {

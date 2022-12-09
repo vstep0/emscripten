@@ -128,12 +128,28 @@ int emscripten_futex_wait(volatile void *addr, uint32_t val, double max_wait_ms)
     return ret;
   }
 
+  // If dynamic linking is supported then we busy wait so that we can handle
+  // loading of new code when another thread calls dlopen.
   // -1 (or any negative number) means wait indefinitely.
   int64_t max_wait_ns = -1;
   if (max_wait_ms != INFINITY) {
     max_wait_ns = (int64_t)(max_wait_ms*1000*1000);
   }
+#ifdef __pic__
+#define MAX_WAIT (1000*1000*100)
+  // If dynamic linking is supported then we only wait for MAX_WAIT nanoseconds
+  // at a time so we can respond to dlopen calls that might happen on other
+  // threads.
+  int64_t total = 0;
+  while (max_wait_ns == -1 || total < max_wait_ns) {
+    ret = __builtin_wasm_memory_atomic_wait32((int*)addr, val, MAX_WAIT);
+    if (ret != 2) break;
+    _emscripten_yield();
+    total += MAX_WAIT;
+  }
+#else
   ret = __builtin_wasm_memory_atomic_wait32((int*)addr, val, max_wait_ns);
+#endif
   emscripten_conditional_set_current_thread_status(EM_THREAD_STATUS_WAITFUTEX, EM_THREAD_STATUS_RUNNING);
 
   // memory.atomic.wait32 returns:

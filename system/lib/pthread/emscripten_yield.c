@@ -1,21 +1,17 @@
 #include <stdbool.h>
 #include <sched.h>
 #include <threads.h>
-#include "syscall.h"
 
 #include <emscripten/threading.h>
+
+#include "syscall.h"
+#include "threading_internal.h"
 
 static _Atomic bool thread_crashed = false;
 
 void _emscripten_thread_crashed() {
   thread_crashed = true;
 }
-
-static void dummy()
-{
-}
-
-weak_alias(dummy, _emscripten_thread_sync_code);
 
 /*
  * Called whenever a thread performs a blocking action (or calls sched_yield).
@@ -41,6 +37,9 @@ void _emscripten_yield() {
     // singlethreaded.
     emscripten_main_thread_process_queued_calls();
   }
-
-  _emscripten_thread_sync_code();
+#ifdef __PIC__
+  else {
+    _emscripten_process_dlopen_queue();
+  }
+#endif
 }

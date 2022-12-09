@@ -7,8 +7,9 @@
 
 #pragma once
 
-typedef union em_variant_val
-{
+#include <pthread.h>
+
+typedef union em_variant_val {
   int i;
   int64_t i64;
   float f;
@@ -20,8 +21,7 @@ typedef union em_variant_val
 // Proxied C/C++ functions support at most this many arguments. Dispatch is
 // static/strongly typed by signature.
 #define EM_QUEUED_CALL_MAX_ARGS 11
-typedef struct em_queued_call
-{
+typedef struct em_queued_call {
   int functionEnum;
   void *functionPtr;
   _Atomic uint32_t operationDone;
@@ -99,6 +99,7 @@ typedef struct thread_profiler_block {
 void __emscripten_init_main_thread_js(void* tb);
 void _emscripten_thread_profiler_enable();
 void __emscripten_thread_cleanup(pthread_t thread);
+void __emscripten_thread_exit_joinable(pthread_t thread);
 
 hidden void* _emscripten_tls_init(void);
 hidden void _emscripten_tls_free(void);
@@ -108,6 +109,10 @@ hidden void _emscripten_tls_free(void);
 // behaviour, but we have a couple of places where we add these checks so that
 // we can pass more of the posixtest suite that vanilla musl.
 int _emscripten_thread_is_valid(pthread_t thread);
+
+#ifdef __PIC__
+void _emscripten_process_dlopen_queue(void);
+#endif
 
 #ifdef NDEBUG
 #define emscripten_set_current_thread_status(newStatus)

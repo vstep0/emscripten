@@ -1634,7 +1634,13 @@ def setup_pthreads(target):
   ]
 
   if settings.MAIN_MODULE:
-    settings.REQUIRED_EXPORTS += ['_emscripten_thread_sync_code', '__dl_seterr']
+    settings.REQUIRED_EXPORTS += [
+      '_emscripten_thread_sync_code',
+      '_emscripten_thread_sync_code_async',
+      '_emscripten_proxy_sync_code',
+      '_emscripten_proxy_sync_code_async',
+      '__dl_seterr',
+    ]
 
   settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += [
     '$exitOnMainThread',
